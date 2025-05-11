@@ -120,6 +120,9 @@ type MongoDBStatefulSetOwner interface {
 
 	// NeedsAutomationConfigVolume returns whether the statefulset needs to have a volume for the automationconfig.
 	NeedsAutomationConfigVolume() bool
+
+	// GetResourceRequirements returns the resource requirements for the MongoDB container.
+	GetResourceRequirements() corev1.ResourceRequirements
 }
 
 // BuildMongoDBReplicaSetStatefulSetModificationFunction builds the parts of the replica set that are common between every resource that implements
@@ -176,8 +179,8 @@ func BuildMongoDBReplicaSetStatefulSetModificationFunction(mdb MongoDBStatefulSe
 		scriptsVolume = statefulset.CreateVolumeFromEmptyDir("agent-scripts")
 		scriptsVolumeMount := statefulset.CreateVolumeMount(scriptsVolume.Name, "/opt/scripts", statefulset.WithReadOnly(false))
 
-		upgradeInitContainer = podtemplatespec.WithInitContainer(versionUpgradeHookName, versionUpgradeHookInit([]corev1.VolumeMount{hooksVolumeMount}, versionUpgradeHookImage))
-		readinessInitContainer = podtemplatespec.WithInitContainer(ReadinessProbeContainerName, readinessProbeInit([]corev1.VolumeMount{scriptsVolumeMount}, readinessProbeImage))
+		upgradeInitContainer = podtemplatespec.WithInitContainer(versionUpgradeHookName, versionUpgradeHookInit([]corev1.VolumeMount{hooksVolumeMount}, versionUpgradeHookImage, &mdb))
+		readinessInitContainer = podtemplatespec.WithInitContainer(ReadinessProbeContainerName, readinessProbeInit([]corev1.VolumeMount{scriptsVolumeMount}, readinessProbeImage, &mdb))
 		scriptsVolumeMod = podtemplatespec.WithVolume(scriptsVolume)
 		hooksVolumeMod = podtemplatespec.WithVolume(hooksVolume)
 
@@ -277,14 +280,14 @@ func AutomationAgentCommand(withAgentAPIKeyExport bool, logLevel mdbv1.LogLevel,
 	return []string{"/bin/bash", "-c", MongodbUserCommand + BaseAgentCommand() + " -cluster=" + clusterFilePath + automationAgentOptions + agentLogOptions}
 }
 
-func mongodbAgentContainer(automationConfigSecretName string, volumeMounts []corev1.VolumeMount, logLevel mdbv1.LogLevel, logFile string, maxLogFileDurationHours int, agentImage string) container.Modification {
+func mongodbAgentContainer(automationConfigSecretName string, volumeMounts []corev1.VolumeMount, logLevel mdbv1.LogLevel, logFile string, maxLogFileDurationHours int, agentImage string, mdb mdbv1.MongoDBCommunity) container.Modification {
 	_, containerSecurityContext := podtemplatespec.WithDefaultSecurityContextsModifications()
 	return container.Apply(
 		container.WithName(AgentName),
 		container.WithImage(agentImage),
 		container.WithImagePullPolicy(corev1.PullAlways),
 		container.WithReadinessProbe(DefaultReadiness()),
-		container.WithResourceRequirements(resourcerequirements.Defaults()),
+		container.WithResourceRequirements(resourcerequirements.Defaults(mdb.ResourceRequirements)),
 		container.WithVolumeMounts(volumeMounts),
 		container.WithCommand(AutomationAgentCommand(false, logLevel, logFile, maxLogFileDurationHours)),
 		containerSecurityContext,
@@ -314,13 +317,13 @@ func mongodbAgentContainer(automationConfigSecretName string, volumeMounts []cor
 	)
 }
 
-func versionUpgradeHookInit(volumeMount []corev1.VolumeMount, versionUpgradeHookImage string) container.Modification {
+func versionUpgradeHookInit(volumeMount []corev1.VolumeMount, versionUpgradeHookImage string, resourceRequirements corev1.ResourceRequirements) container.Modification {
 	_, containerSecurityContext := podtemplatespec.WithDefaultSecurityContextsModifications()
 	return container.Apply(
 		container.WithName(versionUpgradeHookName),
 		container.WithCommand([]string{"cp", "version-upgrade-hook", "/hooks/version-upgrade"}),
 		container.WithImage(versionUpgradeHookImage),
-		container.WithResourceRequirements(resourcerequirements.Defaults()),
+		container.WithResourceRequirements(resourcerequirements.Defaults(resourceRequirements)),
 		container.WithImagePullPolicy(corev1.PullAlways),
 		container.WithVolumeMounts(volumeMount),
 		containerSecurityContext,
@@ -353,7 +356,7 @@ func logsPvc(logsVolumeName string) persistentvolumeclaim.Modification {
 
 // readinessProbeInit returns a modification function which will add the readiness probe container.
 // this container will copy the readiness probe binary into the /opt/scripts directory.
-func readinessProbeInit(volumeMount []corev1.VolumeMount, readinessProbeImage string) container.Modification {
+func readinessProbeInit(volumeMount []corev1.VolumeMount, readinessProbeImage string, mdb mdbv1.MongoDBCommunity) container.Modification {
 	_, containerSecurityContext := podtemplatespec.WithDefaultSecurityContextsModifications()
 	return container.Apply(
 		container.WithName(ReadinessProbeContainerName),
@@ -361,12 +364,12 @@ func readinessProbeInit(volumeMount []corev1.VolumeMount, readinessProbeImage st
 		container.WithImage(readinessProbeImage),
 		container.WithImagePullPolicy(corev1.PullAlways),
 		container.WithVolumeMounts(volumeMount),
-		container.WithResourceRequirements(resourcerequirements.Defaults()),
+		container.WithResourceRequirements(resourcerequirements.Defaults(mdb.ResourceRequirements)),
 		containerSecurityContext,
 	)
 }
 
-func mongodbContainer(mongodbImage string, volumeMounts []corev1.VolumeMount, additionalMongoDBConfig mdbv1.MongodConfiguration) container.Modification {
+func mongodbContainer(mongodbImage string, volumeMounts []corev1.VolumeMount, additionalMongoDBConfig mdbv1.MongodConfiguration, mdb mdbv1.MongoDBCommunity) container.Modification {
 	filePath := additionalMongoDBConfig.GetDBDataDir() + "/" + automationMongodConfFileName
 	mongoDbCommand := fmt.Sprintf(`
 if [ -e "/hooks/version-upgrade" ]; then
@@ -393,7 +396,7 @@ exec mongod -f %s;
 	return container.Apply(
 		container.WithName(MongodbName),
 		container.WithImage(mongodbImage),
-		container.WithResourceRequirements(resourcerequirements.Defaults()),
+		container.WithResourceRequirements(resourcerequirements.Defaults(mdb.ResourceRequirements)),
 		container.WithCommand(containerCommand),
 		// The official image provides both CMD and ENTRYPOINT. We're reusing the former and need to replace
 		// the latter with an empty string.

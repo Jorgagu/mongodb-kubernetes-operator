@@ -704,6 +704,16 @@ type MongoDBCommunity struct {
 
 	Spec   MongoDBCommunitySpec   `json:"spec,omitempty"`
 	Status MongoDBCommunityStatus `json:"status,omitempty"`
+	// ResourceRequirements allows customization of resource limits and requests for MongoDB containers.
+	// +optional
+	ResourceRequirements *corev1.ResourceRequirements `json:"resourceRequirements,omitempty"`
+}
+
+func (m *MongoDBCommunity) GetResourceRequirements() corev1.ResourceRequirements {
+	if m.ResourceRequirements == nil {
+		return corev1.ResourceRequirements{}
+	}
+	return *m.ResourceRequirements
 }
 
 func (m *MongoDBCommunity) GetMongodConfiguration() MongodConfiguration {

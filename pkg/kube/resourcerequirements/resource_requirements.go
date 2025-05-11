@@ -11,8 +11,11 @@ const (
 )
 
 // Defaults returns the default resource requirements for a container
-func Defaults() corev1.ResourceRequirements {
-	// we can safely ignore the error as we are passing all valid values
+func Defaults(custom *corev1.ResourceRequirements) corev1.ResourceRequirements {
+	if custom != nil {
+		return *custom
+	}
+	// Fallback to default values
 	req, _ := newDefaultRequirements()
 	return req
 }
